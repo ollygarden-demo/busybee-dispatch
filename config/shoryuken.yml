@@ -1,0 +1,4 @@
+concurrency: <%= ENV.fetch("SHORYUKEN_CONCURRENCY", 5) %>
+timeout: <%= ENV.fetch("SHORYUKEN_TIMEOUT", 60) %>
+queues:
+  - <%= ENV.fetch("SQS_QUEUE_URL", "busybee-deliveries") %>

@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-06/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "external_id", "hub_id", "occurred_at", "pickup", "dropoff", "recipient"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "external_id": { "type": "string", "format": "uuid" },
+    "hub_id": { "type": "string", "format": "uuid" },
+    "occurred_at": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "pickup": { "$ref": "#/definitions/point" },
+    "dropoff": { "$ref": "#/definitions/point" },
+    "recipient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "phone"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "phone": { "type": "string", "pattern": "^\\+[1-9][0-9]{7,14}$" }
+      }
+    }
+  },
+  "definitions": {
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coordinates"],
+      "properties": {
+        "coordinates": {
+          "type": "array",
+          "items": [
+            { "type": "number", "minimum": -180, "maximum": 180 },
+            { "type": "number", "minimum": -90, "maximum": 90 }
+          ],
+          "additionalItems": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    }
+  }
+}

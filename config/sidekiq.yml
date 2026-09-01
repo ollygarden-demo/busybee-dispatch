@@ -1,0 +1,7 @@
+:concurrency: 5
+:queues:
+  - outbox
+  - dispatch
+  - notifications
+  - storage
+  - maintenance

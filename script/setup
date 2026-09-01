@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+if docker compose version >/dev/null 2>&1; then
+  compose="docker compose"
+else
+  compose="docker-compose"
+fi
+
+$compose up -d postgres redis localstack mock-routing
+$compose run --rm api bin/rails db:prepare db:seed
+$compose up -d api sidekiq shoryuken
+$compose ps
