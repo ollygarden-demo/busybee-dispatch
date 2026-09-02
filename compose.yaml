@@ -11,6 +11,19 @@ x-app: &app
     SQS_QUEUE_URL: http://localstack:4566/000000000000/busybee-deliveries
     DISPATCH_TOPIC_ARN: arn:aws:sns:eu-central-1:000000000000:busybee-events
     PROOF_BUCKET: busybee-proofs
+    OTEL_SERVICE_NAME: busybee-dispatch
+    OTEL_SERVICE_VERSION: development
+    OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=development
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+    OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    OTEL_PROPAGATORS: tracecontext,baggage
+    OTEL_TRACES_EXPORTER: otlp
+    OTEL_METRICS_EXPORTER: otlp
+    OTEL_METRIC_EXPORT_INTERVAL: "10000"
+    OTEL_LOGS_EXPORTER: otlp
+    OTEL_TRACES_SAMPLER: parentbased_traceidratio
+    OTEL_TRACES_SAMPLER_ARG: "1.0"
+    OTEL_LOG_LEVEL: error
   depends_on:
     postgres:
       condition: service_healthy
@@ -20,12 +33,14 @@ x-app: &app
       condition: service_healthy
     mock-routing:
       condition: service_healthy
+    lgtm:
+      condition: service_healthy
 
 services:
   api:
     <<: *app
     ports:
-      - "3000:3000"
+      - "${BUSYBEE_API_PORT:-3000}:3000"
 
   sidekiq:
     <<: *app
@@ -34,6 +49,20 @@ services:
   shoryuken:
     <<: *app
     command: bundle exec shoryuken -R -C config/shoryuken.yml
+
+  lgtm:
+    image: grafana/otel-lgtm:0.32.0
+    healthcheck:
+      test: ["CMD", "cat", "/tmp/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "3001:3000"
+      - "${BUSYBEE_OTLP_GRPC_PORT:-4317}:4317"
+      - "${BUSYBEE_OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      - lgtm-data:/data
 
   postgres:
     image: postgis/postgis:16-3.4
@@ -85,4 +114,5 @@ services:
       - .:/app:ro
 
 volumes:
+  lgtm-data:
   postgres-data:

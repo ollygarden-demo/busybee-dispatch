@@ -4,13 +4,13 @@
 
 BusyBee Dispatch is a Rails 7.2 delivery dispatch API used to demonstrate a production-shaped Ruby workload. It combines geospatial assignment, stateful delivery processing, background jobs, AWS messaging, and outbound HTTP calls in a locally runnable system.
 
-The repository is the intentionally uninstrumented baseline for a future Rose demo, not a complete logistics product. It resembles an application written by a developer who knows basic logging but has not adopted traces, metrics, or OpenTelemetry. Every included integration must generate meaningful behavior that can be exercised through deterministic scenarios.
+The repository is a production-shaped minimum viable OpenTelemetry example for a Rose demo, not a complete logistics product. It combines stable Ruby tracing with the independently versioned experimental Ruby metrics and logs SDKs. Every included integration must generate meaningful behavior that can be exercised through deterministic scenarios.
 
 ## Goals
 
 - Exercise Rails, Rack, Active Record, PostgreSQL, and PostGIS through realistic API traffic.
 - Run asynchronous work through both Sidekiq/Redis and Shoryuken/SQS.
-- Produce realistic application behavior across HTTP, database, Redis, jobs, AWS SDK calls, and outbound Faraday requests without custom observability instrumentation.
+- Produce realistic application behavior across HTTP, database, Redis, jobs, AWS SDK calls, and outbound Faraday requests with minimal, purposeful observability instrumentation.
 - Provide deterministic happy-path and failure scenarios for demos and automated evaluations.
 - Start locally with Docker Compose and no dependency on a real AWS account.
 - Remain small enough for a new contributor to understand in one session.
@@ -22,7 +22,7 @@ The repository is the intentionally uninstrumented baseline for a future Rose de
 - Multi-region deployment, billing, or real courier mobile applications.
 - Exhaustive use of every helper and test gem in the reference Gemfile.
 - Dependence on paid services for the default local workflow.
-- OpenTelemetry, Prometheus, an OpenTelemetry Collector, or a metrics endpoint in the baseline application.
+- An application-owned Prometheus endpoint; metrics are exported to LGTM over OTLP.
 
 ## Domain
 
@@ -186,9 +186,27 @@ The default circuit opens after five failures within 60 seconds and remains open
 
 ## Baseline logging
 
-The application has only sparse, ordinary Rails logs at useful lifecycle boundaries such as accepting a delivery, completing an assignment job, falling back to default configuration, and reporting an unexpected outbox event. It does not emit traces or application metrics, add trace correlation fields, expose `/metrics`, or run an OpenTelemetry Collector. Logs exclude authorization headers, tokens, event bodies, phone numbers, and precise coordinates.
+The application has sparse, ordinary Rails logs at useful lifecycle boundaries such as accepting a delivery, completing an assignment job, falling back to default configuration, and reporting an unexpected outbox event. Logs exclude authorization headers, tokens, event bodies, phone numbers, and precise coordinates.
 
-This limited starting point is deliberate. A later Rose evaluation can assess the repository and propose instrumentation, but that work is outside the current application baseline.
+The application exports existing Rails logs with trace and span correlation through the
+experimental Ruby Logger instrumentation. Log bodies and attributes do not include event
+payloads, authorization data, recipient data, coordinates, or credentials.
+
+OpenTelemetry instrumentation is configured explicitly (not `use_all`): Rack provides
+the single inbound server span and suppresses `/health`, Action Pack provides controller
+spans, Active Record covers database calls, Redis covers cache boundaries, Faraday covers
+routing HTTP, AWS SDK covers DynamoDB/S3/SNS/SQS/SSM, Sidekiq covers enqueue and execution,
+and Logger correlates existing application logs. Shoryuken has a manual SQS receive span
+because no maintained contrib instrumentation is available. Assignment, delivery
+creation/transition, and event-processing workflows add only bounded business attributes.
+The business metrics are `busybee.assignment.attempts`,
+`busybee.assignment.duration`, and `busybee.delivery.events`; their dimensions are
+bounded outcome/result values.
+
+Compose sets the local demo to parent-based 100% trace sampling so scenarios are easy to
+inspect. Production deployments must override `OTEL_TRACES_SAMPLER_ARG` with a suitable
+ratio. OTLP/HTTP is sent to LGTM at `http://lgtm:4318`; Grafana is available on port
+3001, with Tempo, Prometheus, and Loki data sources for traces, metrics, and logs.
 
 ## Demo scenarios
 
@@ -217,7 +235,7 @@ Docker Compose provides:
 - Redis;
 - LocalStack;
 - mock routing service;
-- no telemetry collector or observability backend.
+- Grafana LGTM, available as the local OTLP telemetry backend.
 
 ## Dependency baseline
 
@@ -246,7 +264,7 @@ The initial JWT implementation uses HMAC in local development and validates sign
 
 ## Testing
 
-The focused test suite covers geographic validation, Statesman transitions, assignment job outcomes, routing responses, SQS event processing, and Shoryuken delegation. Deterministic scenario scripts exercise the full local topology and failure branches. Tests do not contact public APIs or real AWS services.
+The focused test suite covers geographic validation, Statesman transitions, assignment job outcomes, routing responses, SQS event processing, Shoryuken delegation, W3C message propagation, business metrics, and correlated log export. Deterministic scenario scripts exercise the full local topology and failure branches. Tests do not contact public APIs or real AWS services.
 
 ## Acceptance criteria
 
@@ -255,7 +273,8 @@ The focused test suite covers geographic validation, Statesman transitions, assi
 - Each demo scenario runs from a documented command and returns a clear result.
 - The happy path crosses Rails, PostgreSQL/PostGIS, Redis, Sidekiq, Faraday, and at least one LocalStack AWS service.
 - The SQS path crosses Shoryuken and then reuses the normal dispatch service.
-- No OpenTelemetry, Prometheus, trace propagation, telemetry collector, or metrics endpoint is present in the baseline.
+- W3C trace-context and baggage propagation are configured for HTTP, Sidekiq, AWS
+  messaging, and the manually covered Shoryuken consumer.
 - Tests and static checks pass without paid credentials or external infrastructure.
 - The repository contains no secrets, real customer data, or Delivery Hero branding.
 

@@ -1,6 +1,25 @@
 source "https://rubygems.org"
 
-ruby ">= 3.2.0"
+ruby ">= 3.3.0"
+
+# OpenTelemetry tracing is stable; metrics and logs are intentionally pinned to
+# their independently released experimental SDKs.
+gem "opentelemetry-sdk", "~> 1.13"
+gem "opentelemetry-exporter-otlp", "~> 0.35"
+gem "opentelemetry-instrumentation-rack", "~> 0.31"
+gem "opentelemetry-instrumentation-action_pack", "~> 0.18"
+gem "opentelemetry-instrumentation-active_record", "~> 0.13"
+gem "opentelemetry-instrumentation-redis", "~> 0.29"
+gem "opentelemetry-instrumentation-faraday", "~> 0.33"
+gem "opentelemetry-instrumentation-aws_sdk", "~> 0.13"
+gem "opentelemetry-instrumentation-sidekiq", "~> 0.29"
+gem "opentelemetry-instrumentation-logger", "~> 0.4"
+gem "opentelemetry-metrics-api", "~> 0.7"
+gem "opentelemetry-metrics-sdk", "~> 0.17"
+gem "opentelemetry-exporter-otlp-metrics", "~> 0.11"
+gem "opentelemetry-logs-api", "~> 0.4"
+gem "opentelemetry-logs-sdk", "~> 0.6"
+gem "opentelemetry-exporter-otlp-logs", "~> 0.5"
 
 gem "rails", "~> 7.2.3"
 gem "bootsnap", require: false

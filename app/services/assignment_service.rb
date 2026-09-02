@@ -8,11 +8,20 @@ class AssignmentService
   end
 
   def call
-    result = nil
-    locked = @delivery.with_advisory_lock("delivery-assignment-#{@delivery.id}", timeout_seconds: 0) do
-      result = assign
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    BusybeeDispatch::Telemetry.in_span("delivery.assignment", attributes: { "busybee.workflow" => "assignment" }) do |span|
+      result = nil
+      locked = @delivery.with_advisory_lock("delivery-assignment-#{@delivery.id}", timeout_seconds: 0) do
+        result = assign
+      end
+      result = Result.new(outcome: :transient, reason: "lock_unavailable") unless locked
+      span.set_attribute("busybee.assignment.outcome", result.outcome.to_s)
+      BusybeeDispatch::Telemetry.record_assignment(
+        result.outcome,
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      )
+      result
     end
-    locked ? result : Result.new(outcome: :transient, reason: "lock_unavailable")
   end
 
   private

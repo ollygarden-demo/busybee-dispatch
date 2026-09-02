@@ -1,6 +1,6 @@
 # BusyBee Dispatch
 
-BusyBee Dispatch is a small Rails delivery API built as a realistic starting point for a future Rose instrumentation demo. It deliberately begins as an ordinary application: it has a handful of plain Rails log messages and no OpenTelemetry, Prometheus endpoint, collector, or observability backend.
+BusyBee Dispatch is a small Rails delivery API built as a realistic starting point for a Rose instrumentation demo. The application keeps a handful of plain Rails log messages and adds minimal OpenTelemetry instrumentation at its meaningful technical and business boundaries. A local Grafana LGTM backend is included for inspection.
 
 The application uses PostgreSQL/PostGIS for delivery and courier state, Redis and Sidekiq for internal jobs, SQS and Shoryuken for inbound events, and a fault-controllable routing service for outbound HTTP behavior. LocalStack supplies the AWS services locally.
 
@@ -22,6 +22,29 @@ docker compose logs -f api sidekiq shoryuken
 docker compose run --rm api bundle exec rspec
 docker compose down
 ```
+
+## Local telemetry backend
+
+Grafana is available at <http://localhost:3001>. LGTM exposes OTLP/gRPC on
+`localhost:4317` and OTLP/HTTP on `localhost:4318`; the application sends telemetry to
+LGTM over OTLP/HTTP. LGTM data is stored in the `lgtm-data` Docker
+volume and survives `docker compose down`; use `docker compose down --volumes` to remove it.
+Set `BUSYBEE_API_PORT`, `BUSYBEE_OTLP_GRPC_PORT`, or `BUSYBEE_OTLP_HTTP_PORT` before
+starting Compose when one of the default host ports is already occupied.
+
+The Rack, Action Pack, Active Record, Redis, Faraday, AWS SDK, Sidekiq, and Logger contrib
+instrumentations are enabled explicitly; Rack suppresses `/health` server spans. The Shoryuken consumer uses a small manual
+receive span and converts AWS message-attribute objects to string carriers before W3C
+extraction. Assignment and delivery-event workflows add bounded business spans and
+metrics; existing Rails logs are exported with trace and span correlation. Compose uses
+100% trace sampling for deterministic local demos; production should set
+`OTEL_TRACES_SAMPLER_ARG` to an appropriate ratio.
+
+In Grafana, inspect traces in Explore with the Tempo data source, metrics in Explore
+with Prometheus, and logs in Explore with Loki. Filter all three by
+`service.name="busybee-dispatch"`.
+
+See [the instrumentation overview](docs/instrumentation.md) for an example trace.
 
 The seed is repeatable. It restores one Berlin hub and three couriers without changing the availability of couriers attached to active deliveries.
 
