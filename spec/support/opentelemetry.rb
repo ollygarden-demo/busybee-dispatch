@@ -17,20 +17,20 @@ RSpec.configure do |config|
   suite_context = nil
 
   config.before(:suite) do
-    suite_span = tracer.start_span("rspec", with_parent: pipeline_context, kind: :internal,
-                                            attributes: { "test.suite.name" => "rspec" })
+    suite_span = tracer.start_span("rspec", with_parent: pipeline_context, attributes: { "test.suite.name" => "rspec" })
     suite_context = OpenTelemetry::Trace.context_with_span(suite_span, parent_context: pipeline_context)
   end
 
   config.around(:example) do |example|
     OpenTelemetry::Context.with_current(suite_context) do
-      tracer.in_span(example.full_description, kind: :internal,
-                                               attributes: { "test.case.name" => example.full_description }) do |span|
+      tracer.in_span(example.full_description, attributes: { "test.case.name" => example.full_description }) do |span|
         example.run
-        span.set_attribute("test.case.result.status", example.exception ? "fail" : "pass")
         if example.exception
+          span.set_attribute("test.case.result.status", "fail")
           span.record_exception(example.exception)
           span.status = OpenTelemetry::Trace::Status.error(example.exception.class.name)
+        else
+          span.set_attribute("test.case.result.status", "pass")
         end
       end
     end
