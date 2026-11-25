@@ -32,3 +32,8 @@ group :development, :test do
   gem "dotenv-rails"
   gem "rspec-rails", "~> 8.0"
 end
+
+group :test do
+  gem "opentelemetry-exporter-otlp", "~> 0.37.0", require: false
+  gem "opentelemetry-sdk", "~> 1.13", require: false
+end

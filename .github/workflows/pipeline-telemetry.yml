@@ -1,0 +1,225 @@
+# Emits one OpenTelemetry trace per run (CI/CD semantic conventions) and the
+# repository's VCS metrics to Dash0. Pipeline spans come from the workflow itself
+# because GitHub cannot reach a Collector webhook here.
+name: Pipeline Telemetry
+
+on:
+  push:
+    branches: [otel-cicd-pipeline-telemetry]
+
+permissions: {}
+
+env:
+  DASH0_ENDPOINT: https://ingress.eu-west-1.aws.dash0.com
+  OTELCOL_IMAGE: otel/opentelemetry-collector-contrib:0.166.0@sha256:3e18fe04181de50bdd72e23ad4a4d6214b54351e63d496f1c58127cc4541ad7f
+  OTEL_CLI_VERSION: 0.6.1
+  OTEL_CLI_SHA256: ea47b8e760e844a84b872bcc55a5059809d6d506e7d5bad0ddd1eb650fb3463c # otel-cli_0.6.1_linux_amd64.tar.gz
+  OTEL_SERVICE_NAME: busybee-dispatch-ci
+  # Pipeline-run resource on every span of the run. Values must not contain "," or "=".
+  # Spaces stay unencoded: the Ruby SDK does not percent-decode this variable.
+  OTEL_RESOURCE_ATTRIBUTES: "\
+    cicd.pipeline.name=${{ github.workflow }},\
+    cicd.pipeline.run.id=${{ github.run_id }},\
+    cicd.pipeline.run.url.full=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }},\
+    vcs.provider.name=github,\
+    vcs.owner.name=${{ github.repository_owner }},\
+    vcs.repository.name=${{ github.event.repository.name }},\
+    vcs.repository.url.full=${{ github.server_url }}/${{ github.repository }},\
+    vcs.ref.head.name=${{ github.ref_name }},\
+    vcs.ref.head.revision=${{ github.sha }},\
+    vcs.ref.type=branch"
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: busybee_dispatch_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d busybee_dispatch_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgis://postgres:postgres@localhost:5432/busybee_dispatch_test
+      RAILS_ENV: test
+      REDIS_URL: redis://localhost:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+    steps:
+      - &prepare-telemetry
+        name: Prepare pipeline telemetry
+        env:
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          DASH0_AUTH_KEY: ${{ secrets.DASH0_AUTH_KEY }}
+        run: |
+          echo "TASK_START=$(date +%s.%N)" >> "$GITHUB_ENV"
+          if [ -z "$DASH0_AUTH_KEY" ]; then echo "::error::DASH0_AUTH_KEY is empty"; exit 1; fi
+          echo "DASH0_AUTH_KEY is set (${#DASH0_AUTH_KEY} characters)"
+          if [ -z "$CHECK_RUN_ID" ]; then echo "::error::job.check_run_id is empty"; exit 1; fi
+
+          # IDs follow the github receiver's scheme so every job computes them independently.
+          {
+            echo "TRACE_ID=$(printf '%s' "${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}t" | sha256sum | cut -c1-32)"
+            echo "RUN_SPAN_ID=$(printf '%s' "${GITHUB_RUN_ID}${GITHUB_RUN_ATTEMPT}s" | sha256sum | cut -c17-32)"
+            echo "TASK_SPAN_ID=$(printf '%s' "${CHECK_RUN_ID}-j" | sha256sum | cut -c17-32)"
+          } >> "$GITHUB_ENV"
+
+          archive="$RUNNER_TEMP/otel-cli.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/tobert/otel-cli/releases/download/v${OTEL_CLI_VERSION}/otel-cli_${OTEL_CLI_VERSION}_linux_amd64.tar.gz"
+          echo "${OTEL_CLI_SHA256}  ${archive}" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" otel-cli
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start Collector
+        env:
+          DASH0_AUTH_KEY: ${{ secrets.DASH0_AUTH_KEY }}
+        run: |
+          docker run -d --name otelcol --network host \
+            -v "$GITHUB_WORKSPACE/.github/otelcol:/etc/otelcol-ci:ro" \
+            -e DASH0_ENDPOINT -e DASH0_AUTH_KEY \
+            "$OTELCOL_IMAGE" --config /etc/otelcol-ci/traces.yaml
+
+      - uses: ruby/setup-ruby@78c62f2208e480ce3d5ae4dfd9b9e181acf48b63 # v1.344.0
+        with:
+          ruby-version: "3.3.12"
+          bundler-cache: true
+
+      - name: Prepare database
+        run: bin/rails db:prepare
+
+      - name: Run tests
+        env:
+          TRACEPARENT: 00-${{ env.TRACE_ID }}-${{ env.TASK_SPAN_ID }}-01
+        run: bundle exec rspec
+
+      - name: Check Compose file
+        run: docker compose config --quiet
+
+      - name: Check shell scripts
+        run: find script docker -type f -exec sh -n {} \;
+
+      - name: Check mock routing service
+        run: python -m py_compile mock-routing/app.py
+
+      - &emit-task-span
+        name: Emit task span
+        if: always()
+        env:
+          CHECK_RUN_ID: ${{ job.check_run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          case "$JOB_STATUS" in
+            success) result=success ;;
+            failure) result=failure ;;
+            cancelled) result=cancellation ;;
+            *) result=error ;;
+          esac
+          status=unset error_type=""
+          if [ "$result" = failure ] || [ "$result" = error ]; then status=error error_type=",error.type=_OTHER"; fi
+
+          otel-cli span --fail --verbose --tp-ignore-env --kind internal --name "$GITHUB_JOB" \
+            --force-trace-id "$TRACE_ID" --force-span-id "$TASK_SPAN_ID" --force-parent-span-id "$RUN_SPAN_ID" \
+            --start "$TASK_START" --end "$(date +%s.%N)" --status-code "$status" \
+            --attrs "cicd.pipeline.task.name=${GITHUB_JOB},cicd.pipeline.task.run.id=${CHECK_RUN_ID},cicd.pipeline.task.run.url.full=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/job/${CHECK_RUN_ID},cicd.pipeline.task.run.result=${result}${error_type}"
+
+      - &stop-collector
+        name: Flush and stop Collector
+        if: always()
+        run: |
+          status=0
+          .github/otelcol/drain.sh || status=$?
+          docker stop --time 30 otelcol > /dev/null || status=1
+          docker logs otelcol
+          exit "$status"
+
+  vcs-metrics:
+    name: vcs-metrics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+    steps:
+      - *prepare-telemetry
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start Collector with the GitHub scraper
+        env:
+          DASH0_AUTH_KEY: ${{ secrets.DASH0_AUTH_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          docker run -d --name otelcol --network host \
+            -v "$GITHUB_WORKSPACE/.github/otelcol:/etc/otelcol-ci:ro" \
+            -e DASH0_ENDPOINT -e DASH0_AUTH_KEY -e GITHUB_TOKEN -e GITHUB_REPOSITORY -e GITHUB_REPOSITORY_OWNER \
+            "$OTELCOL_IMAGE" --config /etc/otelcol-ci/traces.yaml --config /etc/otelcol-ci/vcs-metrics.yaml
+
+      - name: Wait for the first scrape to reach Dash0
+        run: .github/otelcol/drain.sh 1
+
+      - *emit-task-span
+
+      - *stop-collector
+
+  pipeline-run:
+    name: pipeline-run
+    needs: [test, vcs-metrics]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - *prepare-telemetry
+
+      - name: Emit pipeline-run span
+        env:
+          DASH0_AUTH_KEY: ${{ secrets.DASH0_AUTH_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          # Worst job result wins: failure, then cancellation, then success; all skipped is skip.
+          result=skip
+          for r in $RESULTS; do
+            case "$r:$result" in
+              failure:*) result=failure ;;
+              cancelled:success | cancelled:skip) result=cancellation ;;
+              success:skip) result=success ;;
+            esac
+          done
+          status=unset error_type=""
+          if [ "$result" = failure ]; then status=error error_type=",error.type=_OTHER"; fi
+
+          start=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" --jq .run_started_at)
+          OTEL_EXPORTER_OTLP_ENDPOINT="$DASH0_ENDPOINT" OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${DASH0_AUTH_KEY}" \
+            otel-cli span --fail --verbose --tp-ignore-env --kind server --name "RUN ${GITHUB_WORKFLOW}" \
+            --force-trace-id "$TRACE_ID" --force-span-id "$RUN_SPAN_ID" \
+            --start "$start" --end "$(date +%s.%N)" --status-code "$status" \
+            --attrs "cicd.pipeline.action.name=RUN,cicd.pipeline.result=${result}${error_type}"
+          echo "Trace ${TRACE_ID}, pipeline-run span ${RUN_SPAN_ID}, result ${result}"

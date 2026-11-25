@@ -1,0 +1,28 @@
+# Forwards in-job spans (otel-cli task spans, RSpec spans) to Dash0.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: localhost:4318
+
+processors:
+  # otel-cli sends numeric-looking --attrs values as integers; the CI/CD conventions type this as a string.
+  transform/cicd:
+    error_mode: propagate
+    trace_statements:
+      - set(span.attributes["cicd.pipeline.task.run.id"], String(span.attributes["cicd.pipeline.task.run.id"])) where span.attributes["cicd.pipeline.task.run.id"] != nil
+
+exporters:
+  debug:
+    verbosity: detailed
+  otlp_http/dash0:
+    endpoint: ${env:DASH0_ENDPOINT}
+    headers:
+      Authorization: Bearer ${env:DASH0_AUTH_KEY}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform/cicd]
+      exporters: [debug, otlp_http/dash0]

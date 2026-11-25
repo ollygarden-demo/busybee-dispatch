@@ -1,0 +1,21 @@
+# Merged over traces.yaml: scrapes VCS metrics for this repository only.
+extensions:
+  bearertokenauth/github:
+    token: ${env:GITHUB_TOKEN}
+
+receivers:
+  github:
+    collection_interval: 300s
+    scrapers:
+      scraper:
+        github_org: ${env:GITHUB_REPOSITORY_OWNER}
+        search_query: repo:${env:GITHUB_REPOSITORY}
+        auth:
+          authenticator: bearertokenauth/github
+
+service:
+  extensions: [bearertokenauth/github]
+  pipelines:
+    metrics:
+      receivers: [github]
+      exporters: [debug, otlp_http/dash0]
